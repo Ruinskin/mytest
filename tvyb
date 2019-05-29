@@ -1,0 +1,119 @@
+#!/bin/bash
+[ $(df -h | awk '$NF=="/var/ftp/rhel7"{print}' | wc -l) -eq 0 ] && echo "require mount point : /var/ftp/rhel7" && exit 1
+rm -rf /root/.ssh/known_hosts
+
+createhost(){
+  virsh destroy ${host} &> /dev/null
+  virsh undefine ${host} &> /dev/null
+  rm -rf /var/lib/libvirt/images/${host}.img &> /dev/null
+
+  qemu-img create -f qcow2 -b /var/lib/libvirt/images/.rh7_template.img /var/lib/libvirt/images/${host}.img &> /dev/null
+  \cp /var/lib/libvirt/images/.rhel7.xml /tmp/myvm.xml
+  sed -i "/<name>rh7_template/s/rh7_template/${host}/" /tmp/myvm.xml
+  sed -i "/rh7_template\.img/s/rh7_template/${host}/" /tmp/myvm.xml
+  virsh define /tmp/myvm.xml &> /dev/null
+
+
+  virsh start ${host} &>/dev/null
+  sleep 7
+expect <<EO
+  spawn virsh console ${host}
+  expect "^]" {send "\r"}
+  expect "login:" {send "root\r"}
+  expect "：" {send "123456\r"}
+  expect "#" {send "hostnamectl set-hostname ${host}\r"}
+  expect "#" {send "ifconfig ${ethx1} ${ip4}\r"}
+  expect "#" {send "ifconfig ${ethx2} ${ip2}\r"}
+  expect "#" {send "yum-config-manager --add ftp://${repo}.254/rhel7\r"}
+  expect "#" {send "yum-config-manager --setopt=gpgcheck=0 --save\r"}
+  expect "#" {send "echo 'gpgcheck=0'>>/etc/yum.repos.d/${repo}.254_rhel7.repo\r"}
+  expect "#" {send "sed -i '/^$/d' /etc/yum.repos.d/${repo}.254_rhel7.repo\r"}
+  expect "#" {send "yum repolist\r"}
+  expect "#" {send "\035"}
+  expect eof
+EO
+}
+
+sshhost(){
+expect <<C
+spawn ssh-copy-id $1
+expect "yes/no" {send "yes\r"}
+expect "password" {send "123456\r"}
+expect eof
+C
+}
+
+sshnmcli(){
+expect <<EE
+spawn ssh $1
+expect "#" {send "nmcli connection modify $2 ipv4.method manual ipv4.addresses $3/24 connection.autoconnect yes\r"}
+expect "#" {send "nmcli connection up $2\r"}
+expect "#" {send "exit\r"}
+expect eof
+pwd
+EE
+}
+
+sshcplnmp(){
+expect <<FF
+spawn ssh $1
+expect "#" {send "wget ftp://${repo}.254/mysql-5.7.17tar.gz\r"}
+expect "#" {send "exit\r"}
+expect eof
+pwd
+FF
+}
+
+file=$1
+
+host1=($(awk '{printf $1"\n"}' $file ))
+host2=($(awk '{printf $2"\n"}' $file ))
+host3=($(awk '{printf $3"\n"}' $file ))
+host4=($(awk '{printf $4"\n"}' $file ))
+host5=($(awk '{printf $5"\n"}' $file ))
+num=${#host1[@]}
+
+
+
+for ((i=0;i<$num;i++))
+do
+host=${host1[i]}
+ethx1=${host2[i]}
+ip4=${host3[i]}
+ethx2=${host4[i]}
+ip2=${host5[i]}
+echo ${host}  ${ip4} ${ip2} ${ethx1} ${ethx2}
+#read -p "hostname: " host
+#[ -z ${host} ] && echo "hostname must be given" && exit
+#read -p "network 4.0 ip (such as 192.168.4.xx): " ip4
+#read -p "network 2.0 ip (such as 192.168.2.xx): " ip2
+#[ -z ${ip4} ] && repo=2 || repo=4
+
+if [ ! -z ${ip4} ];then
+	repo=${ip4%.*}
+elif [ ! -z ${ip2} ];then
+	repo=${ip2%.*}
+fi
+
+echo $ethx1 $ethx2 $repo $netX
+
+createhost
+
+if [ ! -z ${ip4} ];then
+sshhost ${ip4}
+else
+sshhost ${ip2}
+fi
+
+
+if [ ! -z "${ip4}" -a ! -z "${ip2}" ];then
+  sshnmcli ${ip4} ${ethx1} ${ip4}
+  sshnmcli ${ip4} ${ethx2} ${ip2}
+  sshcplnmp ${ip4}
+elif [ ! -z ${ip4} ];then
+  sshnmcli ${ip4} ${ethx1} ${ip4}
+  sshcplnmp ${ip4}
+fi
+
+done
+
